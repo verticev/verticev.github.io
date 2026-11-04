@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Estes Athena (C6-5) Flight Simulator</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+--bg:#f6f7f9;--card:#fff;--tx:#1a1d21;--mu:#5d6670;--bd:#d9dde3;--p:#d9480f;--c:#1c7ed6;--d:#2f9e44;--g:#8a6d3b}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#14171a;--card:#1e2226;--tx:#eceff2;--mu:#98a2ad;--bd:#343b42;--p:#ff8a4c;--c:#5aa9ff;--d:#5fd07a;--g:#c2a263}}
+:root[data-theme="dark"]{--bg:#14171a;--card:#1e2226;--tx:#eceff2;--mu:#98a2ad;--bd:#343b42;--p:#ff8a4c;--c:#5aa9ff;--d:#5fd07a;--g:#c2a263}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;padding:14px}
+h1{font-size:20px;margin:0 0 2px}.sub{color:var(--mu);margin:0 0 12px;font-size:13px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:12px;margin-bottom:12px}
+canvas{width:100%;display:block;max-width:100%}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}
+.stat{border:1px solid var(--bd);border-radius:8px;padding:6px 10px}.stat b{display:block;font-size:18px}.stat span{color:var(--mu);font-size:12px}
+label{display:flex;flex-direction:column;font-size:12px;color:var(--mu);gap:2px}
+input[type=number]{padding:5px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--tx);font-size:14px}
+button{padding:7px 14px;border-radius:8px;border:1px solid var(--bd);background:var(--p);color:#fff;font-size:14px;cursor:pointer}
+button.s{background:var(--card);color:var(--tx)}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.leg span{display:inline-block;width:10px;height:10px;border-radius:2px;margin:0 4px 0 10px}
+input[type=range]{flex:1;min-width:140px}
+</style></head><body>
+<h1>Estes Athena (2452) · C6-5 flight simulator</h1>
+<p class="sub">2D point-mass model with drag, wind, burn-time mass loss and a parachute that opens at ejection.</p>
+
+<div class="card"><div class="grid">
+<label>Launch angle from vertical (°)<input id="ang" type="number" value="5" step="1"></label>
+<label>Wind (m/s, +x)<input id="wind" type="number" value="2" step="0.5"></label>
+<label>Body Cd<input id="cd" type="number" value="0.6" step="0.05"></label>
+<label>Body diameter (mm)<input id="dia" type="number" value="24.8" step="0.1"></label>
+<label>Chute diameter (in)<input id="cdia" type="number" value="12" step="1"></label>
+<label>Chute Cd<input id="ccd" type="number" value="0.8" step="0.1"></label>
+<label>Delay (s)<input id="del" type="number" value="5" step="0.5"></label>
+<label>Launch mass (g)<input id="m0" type="number" value="69.2" step="0.1"></label>
+<label>Mass after burn (g)<input id="m1" type="number" value="53.3" step="0.1"></label>
+</div>
+<div class="row" style="margin-top:10px"><button id="run">Run / replay</button><button class="s" id="pause">Pause</button>
+<label style="flex-direction:row;align-items:center">Speed&nbsp;<select id="spd"><option>0.5</option><option selected>1</option><option>2</option><option>4</option></select></label></div></div>
+
+<div class="card">
+<div class="leg"><span style="background:var(--p)"></span>Powered<span style="background:var(--c)"></span>Coast<span style="background:var(--d)"></span>Parachute</div>
+<canvas id="path" width="900" height="520"></canvas>
+<div class="row" style="margin-top:6px"><input id="scrub" type="range" min="0" max="1000" value="0"><span id="live" style="font-variant-numeric:tabular-nums"></span></div></div>
+
+<div class="card"><div class="grid" id="stats"></div></div>
+<div class="card"><canvas id="plot" width="900" height="300"></canvas></div>
+
+<p class="sub">Model: m·dv/dt = T − mg − ½ρC<sub>d</sub>A|v<sub>rel</sub>|v<sub>rel</sub>. Thrust curve is an approximate C6 shape scaled to exactly 10 N·s (peak 15.3 N, 1.6 s). The 15.9 g lost between the 69.2 g and 53.3 g masses (propellant 12.48 g plus ejection charge and wadding) is removed in proportion to the impulse delivered. ρ = 1.225 kg/m³. Thrust follows the launch rod for the first metre, then the airflow direction (weathercocking).</p>
+
+<script>
+const $=id=>document.getElementById(id);
+const TC=[[0,0],[.04,8],[.1,15.3],[.15,13],[.3,7.5],[.5,6.2],[1,5.6],[1.4,5.4],[1.55,2.5],[1.6,0]];
+const BURN=1.6,G=9.81,RHO=1.225;
+let cum=0;for(let i=1;i<TC.length;i++)cum+=(TC[i][0]-TC[i-1][0])*(TC[i][1]+TC[i-1][1])/2;
+const SC=10/cum;
+function thrust(t){if(t<=0||t>=BURN)return 0;for(let i=1;i<TC.length;i++)if(t<=TC[i][0]){const[a,b]=[TC[i-1],TC[i]];return SC*(a[1]+(b[1]-a[1])*(t-a[0])/(b[0]-a[0]))}return 0}
+function sim(){
+ const th=+$('ang').value*Math.PI/180,w=+$('wind').value,Cd=+$('cd').value,d=$('dia').value/1000,
+ cd=$('cdia').value*0.0254,cc=+$('ccd').value,dl=+$('del').value,m0=$('m0').value/1000,m1=$('m1').value/1000;
+ const Ab=Math.PI*d*d/4,Ac=Math.PI*cd*cd/4,dm=m0-m1,td=BURN+dl,dt=0.002;
+ let t=0,x=0,y=0,vx=0,vy=0,m=m0,out=[],k=0,landed=false;
+ const L=[Math.sin(th),Math.cos(th)];
+ const acc=(t,x,y,vx,vy,m)=>{
+  const rx=vx-w,ry=vy,rs=Math.hypot(rx,ry);
+  let ramp=t>=td?Math.min(1,(t-td)/0.6):0;
+  const CdA=Cd*Ab+ramp*cc*Ac;
+  let dir=L;if(Math.hypot(x,y)>1&&rs>1){dir=[-0+rx/rs,ry/rs]; }
+  const T=thrust(t);
+  let ax=(T*dir[0]-0.5*RHO*CdA*rs*rx)/m, ay=(T*dir[1]-0.5*RHO*CdA*rs*ry)/m-G;
+  return[ax,ay,T,ramp];
+ };
+ while(t<120){
+  const[ax,ay,T,ramp]=acc(t,x,y,vx,vy,m);
+  if(k%5==0)out.push({t,x,y,vx,vy,m,T,a:Math.hypot(ax,ay+G)/G,ph:t<BURN?0:(t<td?1:2)});
+  k++;
+  if(y<=0&&t<BURN&&ay<=0&&vy<=0){t+=dt;m-=dm*T/10*dt;continue}// sits on pad until thrust > weight
+  vx+=ax*dt;vy+=ay*dt;x+=vx*dt;y+=vy*dt;m-=dm*T/10*dt;t+=dt;
+  if(y<0&&t>0.2){out.push({t,x,y:0,vx,vy,m,T:0,a:0,ph:2});break}
+ }
+ return{out,td};
+}
+let S,idx=0,playing=true,last=0;
+function stats(){
+ const o=S.out;let ap=o[0],mv=o[0],ma=o[0];
+ for(const s of o){if(s.y>ap.y)ap=s;if(Math.hypot(s.vx,s.vy)>Math.hypot(mv.vx,mv.vy))mv=s;if(s.a>ma.a)ma=s}
+ const bo=o.find(s=>s.t>=BURN),dp=o.find(s=>s.t>=S.td),ld=o[o.length-1],h=o[o.length-1],pre=o[o.length-4]||ld;
+ const rows=[['Max altitude',ap.y.toFixed(0)+' m ('+(ap.y*3.281).toFixed(0)+' ft)'],['Time to apogee',ap.t.toFixed(1)+' s'],
+ ['Burnout',bo.y.toFixed(0)+' m @ '+Math.hypot(bo.vx,bo.vy).toFixed(0)+' m/s'],['Max speed',Math.hypot(mv.vx,mv.vy).toFixed(0)+' m/s'],
+ ['Max accel',ma.a.toFixed(1)+' g'],['Chute deploys',dp?dp.t.toFixed(1)+' s @ '+dp.y.toFixed(0)+' m':'n/a'],
+ ['Touchdown speed',Math.abs(pre.vy).toFixed(1)+' m/s'],['Flight time',ld.t.toFixed(1)+' s'],['Downrange',ld.x.toFixed(0)+' m']];
+ $('stats').innerHTML=rows.map(r=>`<div class="stat"><span>${r[0]}</span><b>${r[1]}</b></div>`).join('');
+}
+function css(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim()}
+const col=['--p','--c','--d'];
+function drawPath(){
+ const c=$('path'),g=c.getContext('2d'),W=c.width,H=c.height,o=S.out;
+ g.clearRect(0,0,W,H);
+ let xmin=0,xmax=0,ymax=0;for(const s of o){xmin=Math.min(xmin,s.x);xmax=Math.max(xmax,s.x);ymax=Math.max(ymax,s.y)}
+ const padL=50,padB=34,padT=20,padR=20;
+ const spanX=Math.max(xmax-xmin,1),spanY=Math.max(ymax,1)*1.1;
+ const sc=Math.min((W-padL-padR)/Math.max(spanX,ymax*0.3),(H-padT-padB)/spanY);
+ const ox=padL+((W-padL-padR)-spanX*sc)/2-xmin*sc,oy=H-padB;
+ const X=v=>ox+v*sc,Y=v=>oy-v*sc;
+ g.font='12px system-ui';g.fillStyle=css('--mu');g.strokeStyle=css('--bd');g.lineWidth=1;
+ const step=[10,20,50,100,200,500].find(s=>spanY/s<7)||500;
+ for(let v=0;v<=spanY;v+=step){g.beginPath();g.moveTo(padL,Y(v));g.lineTo(W-padR,Y(v));g.stroke();g.fillText(v+' m',4,Y(v)+4)}
+ g.strokeStyle=css('--g');g.lineWidth=3;g.beginPath();g.moveTo(padL,oy);g.lineTo(W-padR,oy);g.stroke();
+ g.lineWidth=3;
+ for(let i=1;i<o.length;i++){g.strokeStyle=css(col[o[i].ph]);g.beginPath();g.moveTo(X(o[i-1].x),Y(o[i-1].y));g.lineTo(X(o[i].x),Y(o[i].y));g.stroke()}
+ const mark=(s,l)=>{if(!s)return;g.fillStyle=css('--tx');g.beginPath();g.arc(X(s.x),Y(s.y),4,0,7);g.fill();g.fillText(l,X(s.x)+7,Y(s.y)-5)};
+ mark(o.find(s=>s.t>=BURN),'burnout');mark(o.find(s=>s.t>=S.td),'chute');
+ let ap=o[0];for(const s of o)if(s.y>ap.y)ap=s;mark(ap,'apogee');
+ // rocket
+ const s=o[idx],p=o[Math.max(0,idx-1)],n=o[Math.min(o.length-1,idx+1)];
+ let hx=s.ph==2&&S.td<s.t?0:n.x-p.x,hy=s.ph==2&&S.td<s.t?-1:n.y-p.y;
+ if(s.ph==2){hx=0;hy=1}
+ const l=Math.hypot(hx,hy)||1;hx/=l;hy/=l;
+ const px=X(s.x),py=Y(s.y);
+ g.save();g.translate(px,py);g.strokeStyle=css('--tx');g.lineWidth=5;g.lineCap='round';
+ g.beginPath();g.moveTo(0,0);g.lineTo(-hx*16,hy*16);g.stroke();
+ if(s.ph==2){g.strokeStyle=css('--d');g.fillStyle=css('--d');g.beginPath();g.arc(0,-34,16,Math.PI,0);g.fill();g.lineWidth=1;g.beginPath();g.moveTo(-16,-34);g.lineTo(0,-8);g.lineTo(16,-34);g.stroke()}
+ g.restore();
+ $('live').textContent=`t ${s.t.toFixed(2)} s · alt ${s.y.toFixed(0)} m · v ${Math.hypot(s.vx,s.vy).toFixed(1)} m/s`;
+}
+function drawPlot(){
+ const c=$('plot'),g=c.getContext('2d'),W=c.width,H=c.height,o=S.out;g.clearRect(0,0,W,H);
+ const T=o[o.length-1].t;let ym=0,vm=0,vn=0;for(const s of o){ym=Math.max(ym,s.y);vm=Math.max(vm,s.vy);vn=Math.min(vn,s.vy)}
+ const L=50,R=50,Tp=14,B=28;
+ g.font='12px system-ui';g.strokeStyle=css('--bd');g.fillStyle=css('--mu');
+ g.strokeRect(L,Tp,W-L-R,H-Tp-B);
+ const X=t=>L+t/T*(W-L-R),Ya=y=>H-B-y/ym*(H-Tp-B),Yv=v=>H-B-(v-vn)/(vm-vn)*(H-Tp-B);
+ const line=(f,cl)=>{g.strokeStyle=css(cl);g.lineWidth=2;g.beginPath();o.forEach((s,i)=>i?g.lineTo(X(s.t),f(s)):g.moveTo(X(s.t),f(s)));g.stroke()};
+ line(s=>Ya(s.y),'--c');line(s=>Yv(s.vy),'--p');
+ g.fillStyle=css('--c');g.fillText('altitude (0–'+ym.toFixed(0)+' m)',L+6,Tp+14);
+ g.fillStyle=css('--p');g.fillText('vertical velocity ('+vn.toFixed(0)+' to '+vm.toFixed(0)+' m/s)',L+6,Tp+30);
+ g.fillStyle=css('--mu');g.fillText('0 s',L,H-10);g.fillText(T.toFixed(0)+' s',W-R-24,H-10);
+ g.strokeStyle=css('--mu');g.setLineDash([4,4]);g.lineWidth=1;g.beginPath();const z=Yv(0);g.moveTo(L,z);g.lineTo(W-R,z);g.stroke();g.setLineDash([]);
+}
+function run(){S=sim();idx=0;playing=true;$('scrub').max=S.out.length-1;stats();drawPlot();drawPath()}
+function loop(ts){
+ if(playing&&S){const dt=(ts-last)/1000*$('spd').value;
+  const step=dt/0.01;idx=Math.min(S.out.length-1,idx+Math.max(step,0));
+  const i=Math.floor(idx);const keep=idx;idx=i;drawPath();idx=keep;
+  $('scrub').value=i;if(idx>=S.out.length-1)playing=false}
+ last=ts;requestAnimationFrame(loop)}
+$('run').onclick=run;$('pause').onclick=()=>{playing=!playing;$('pause').textContent=playing?'Pause':'Play'};
+$('scrub').oninput=e=>{playing=false;idx=+e.target.value;drawPath()};
+document.querySelectorAll('input[type=number]').forEach(i=>i.onchange=run);
+run();requestAnimationFrame(t=>{last=t;loop(t)});
+</script></body></html>
